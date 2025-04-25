@@ -19,6 +19,84 @@ def create_consumer(topic_name):
         value_deserializer=lambda x: json.loads(x.decode("utf-8")),
     )
 
+def import_files() -> Tuple[DataFrame, DataFrame, DataFrame]:
+    cards_updated= spark.read.csv("data/cards.csv", header=True, inferSchema=True).fillna({"pending_balance": 0})
+    customers= spark.read.csv("data/customers.csv", header=True, inferSchema=True)
+    stream_transactions = spark.read.csv("data/transactions.csv", header=True, inferSchema=True, fillna({"status":"", "pending_balance":0}))
+    return cards_updated, customers, stream_transactions
+
+
+def card_limit_check(card_id, amount, cards_updated) --> bool:
+    credit_limit = (
+        cards_updated
+        .filter(col("card_id") == card_id)
+        .select(col("credit_limit"))
+        .collect()
+    )
+
+    if amount >= 0.5*credit_limit:
+        return False
+
+    return True
+
+
+def balance_check(txn_id, card_id, amount, cards_updated) --> bool:
+    credit_limit = (
+        cards_updated
+        .filter(col("card_id") == card_id)
+        .select("credit_limit")
+        .collect()
+    )
+
+    pending_bal = (
+        stream_transactions
+        .filter(col("transaction_id") == txn_id)
+        .select("pending_balance")
+        .collect()
+    )
+
+    current_bal = (
+        cards_updated
+        .filter(col("card_id") == card_id)
+        .select("current_balance")
+        .collect()
+    )
+
+    total_bal = amount + pending_bal + current_bal
+
+    if total_bal >= credit_limit:
+        return False
+    
+    return True
+
+def location_check(location,card_id, customers, cards_updated) --> bool:
+    customer_id = (
+        cards_udpated
+        .filter(col("card_id") == card_id)
+        .select("customer_id")
+        .collect()
+    )
+
+    address = (
+        customers
+        .filter(col("customer_id") == customer_id)
+        .select("address")
+        .collect()
+    )
+
+    return helper.is_location_close_enough(location, address)
+
+
+
+def test_all_checks(tx_id, card_id, amount, location, cards_udpated, customers):
+    if all([
+    card_limit_check(card_id, amount, cards_updated)
+    and balance_check(txn_id, card_id, amount, cards_updated)
+    and location_check(location, card_id, customers, cards_updated)
+    ]):
+        return True
+    
+    return False
 
 
 def process_transactions(tx):
