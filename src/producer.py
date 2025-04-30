@@ -47,7 +47,7 @@ def main():
         for record in grouped_date[date]:
             producer.send("transactions", value=record)
             print(f"Sent: {record}")
-            time.sleep(0.2)  
+            time.sleep(0.1)  
         time.sleep(2) 
         print(f"Finished sending transactions for {date}\n")
 

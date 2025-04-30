@@ -99,3 +99,34 @@ class DataProcessor:
         )
         print(f"Loaded MySQL table {table_name} into Spark DataFrame.")
         return df
+
+    def save_to_csv(self, df: DataFrame, output_path: str, filename: str) -> None:
+        """
+        Save DataFrame to a single CSV file.
+
+        :param df: DataFrame to save
+        :param output_path: Base directory path
+        :param filename: Name of the CSV file
+        """
+        # Ensure output directory exists
+        os.makedirs(output_path, exist_ok=True)
+
+        # Create full path for the output file
+        full_path = os.path.join(output_path, filename)
+        print(f"Saving to: {full_path}")  # Debugging output
+
+        # Create a temporary directory in the correct output path
+        temp_dir = os.path.join(output_path, "_temp")
+        print(f"Temporary directory: {temp_dir}")  # Debugging output
+
+        # Save to temporary directory
+        df.coalesce(1).write.mode("overwrite").option("header", "true").csv(temp_dir)
+
+        # Find the generated part file
+        csv_file = glob.glob(f"{temp_dir}/part-*.csv")[0]
+
+        # Move and rename it to the desired output path
+        shutil.move(csv_file, full_path)
+
+        # Clean up - remove the temporary directory
+        shutil.rmtree(temp_dir)
