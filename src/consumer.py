@@ -3,31 +3,12 @@ from kafka import KafkaConsumer
 import helper
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit, when
+from pyspark.sql.functions import sum as spark_sum
 import math
 from data_processor import DataProcessor
 
 spark = SparkSession.builder.appName("TransactionConsumer").getOrCreate()
 
-load_dotenv()
-
-def load_config() -> Dict:
-    """Load configuration from environment variables"""
-    return{
-        "mysql_url": os.getenv("MYSQL_URL"),
-        "mysql_user": os.getenv("MYSQL_USER"),
-        "mysql_password": os.getenv("MYSQL_PASSWORD"),
-        "mysql_db": os.getenv("MYSQL_DB"),
-        "cards_table": os.getenv("CARDS_TABLE"),
-        "customers_table": os.getenv("CUSTOMERS_TABLE"),
-        "transactions_table": os.getenv("TRANSACTIONS_TABLE"),
-        "cc_types_table": os.getenv("CC_TYPES_TABLE"),
-        "output_path": os.getenv("OUTPUT_PATH")
-    }
-
-def setup_configuration() -> Dict:
-    load_dotenv()
-    config = load_config()
-    return config
 
 def create_consumer(topic_name):
     """Create and return a Kafka consumer instance."""
@@ -36,7 +17,7 @@ def create_consumer(topic_name):
         bootstrap_servers=["localhost:9092"],
         auto_offset_reset="earliest",
         enable_auto_commit=True,
-        group_id="user-data-consumer-group-test2",
+        group_id="user-data-consumer-group-test6",
         value_deserializer=lambda x: json.loads(x.decode("utf-8")),
     )
 
@@ -54,150 +35,102 @@ def import_files():
     )
     return cards_updated, customers, stream_transactions
 
-def card_limit_check(transaction_info, cards_updated):
+def build_lookup_dicts(cards_df, customers_df, transactions_df):
+    cards_dict = {
+        str(row["card_id"]): {
+            "credit_limit": row["credit_limit"],
+            "current_balance": row["current_balance"],
+            "customer_id": row["customer_id"]
+        }
+        for row in cards_df.collect()
+    }
+
+    customers_dict = {
+        str(row["customer_id"]): row["address"]
+        for row in customers_df.collect()
+    }
+
+    transactions_dict = {
+        str(row["transaction_id"]): row["pending_balance"]
+        for row in transactions_df.collect()
+    }
+
+    return cards_dict, customers_dict, transactions_dict
+
+def card_limit_check(transaction_info, cards_dict):
     card_id = transaction_info["card_id"]
     amount = float(transaction_info["amount"])
-    
-    credit_limit_row = (
-        cards_updated
-        .filter(col("card_id") == card_id)
-        .select("credit_limit")
-        .collect()
-    )
-
-    if not credit_limit_row:
-        return False, "Credit limit info missing"
-
-    credit_limit = float(credit_limit_row[0]["credit_limit"])
-
-    if amount >= 0.5 * credit_limit:
+    card = cards_dict.get(card_id)
+    if not card:
+        return False, "Card not found"
+    if amount >= 0.5 * float(card["credit_limit"]):
         return False, "Transaction exceeds 50% of credit limit"
-
+    
     return True, None
 
-
-def balance_check(transaction_info, cards_updated, stream_transactions):
+def balance_check(transaction_info, cards_dict, transactions_dict):
     txn_id = transaction_info["txn_id"]
     card_id = transaction_info["card_id"]
     amount = float(transaction_info["amount"])
+    card = cards_dict.get(card_id)
+
+    if not card:
+        return False, "Card not found"
     
-    credit_limit_row = (
-        cards_updated
-        .filter(col("card_id") == card_id)
-        .select("credit_limit")
-        .collect()
-    )
+    credit_limit = float(card["credit_limit"])
+    current_bal = float(card["current_balance"])
+    pending_bal = float(transactions_dict.get(txn_id, 0))
 
-    pending_bal_row = (
-        stream_transactions
-        .filter(col("transaction_id") == txn_id)
-        .select("pending_balance")
-        .collect()
-    )
-
-    current_bal_row = (
-        cards_updated
-        .filter(col("card_id") == card_id)
-        .select("current_balance")
-        .collect()
-    )
-
-    if not credit_limit_row or not pending_bal_row or not current_bal_row:
-        return False, "Missing balance info"
-
-    credit_limit = float(credit_limit_row[0]["credit_limit"])
-    pending_bal = float(pending_bal_row[0]["pending_balance"])
-    current_bal = float(current_bal_row[0]["current_balance"])
-
-    total_bal = amount + pending_bal + current_bal
-
-    if total_bal >= credit_limit:
+    if amount + current_bal + pending_bal >= credit_limit:
         return False, "Total balance exceeds credit limit"
-
+    
     return True, None
 
-
-def location_check(transaction_info, customers, cards_updated):
+def location_check(transaction_info, cards_dict, customers_dict):
     card_id = transaction_info["card_id"]
     location = transaction_info["location"]
+    card = cards_dict.get(card_id)
 
-    customer_id_row = (
-        cards_updated
-        .filter(col("card_id") == card_id)
-        .select("customer_id")
-        .collect()
-    )
-
-    if not customer_id_row:
-        return False, "Customer ID not found for card"
-
-    customer_id = customer_id_row[0]["customer_id"]
-
-    address_row = (
-        customers
-        .filter(col("customer_id") == customer_id)
-        .select("address")
-        .collect()
-    )
-
-    if not address_row:
+    if not card:
+        return False, "Card not found"
+    
+    customer_id = str(card["customer_id"])
+    address = customers_dict.get(customer_id)
+    
+    if not address:
         return False, "Customer address not found"
-
-    customer_address = address_row[0]["address"]
-    transaction_location = location
-
-    # ✅ Extract ZIPCODE
+    
     try:
-        customer_zip = customer_address.strip()[-5:]
-        transaction_zip = transaction_location.strip()[-5:]
+        customer_zip = address.strip()[-5:]
+        transaction_zip = location.strip()[-5:]
     except Exception as e:
         return False, f"Error extracting zip codes: {str(e)}"
-
     if not helper.is_location_close_enough(customer_zip, transaction_zip):
         return False, "Merchant location too far"
-
+    
     return True, None
 
-
-def test_all_checks(transaction_info, cards_updated, customers, stream_transactions):
+def test_all_checks(transaction_info, cards_dict, customers_dict, transactions_dict):
     checks = [
-        card_limit_check(transaction_info, cards_updated),
-        balance_check(transaction_info, cards_updated, stream_transactions),
-        location_check(transaction_info, customers, cards_updated)
+        card_limit_check(transaction_info, cards_dict),
+        balance_check(transaction_info, cards_dict, transactions_dict),
+        location_check(transaction_info, cards_dict, customers_dict)
     ]
-
     for passed, reason in checks:
         if not passed:
             return False, reason
-
     return True, None
 
-
-
-def update_txn(transaction_info, cards_updated, customers, stream_transactions):
+def update_txn(transaction_info, stream_transactions, cards_dict, customers_dict, transactions_dict):
     txn_id = transaction_info["txn_id"]
     card_id = transaction_info["card_id"]
     amount = float(transaction_info["amount"])
 
-    previous_txns = (
-        stream_transactions
-        .filter(col("card_id") == card_id)
-        .filter(col("transaction_id") < txn_id)
-        .orderBy(col("transaction_id").desc())
-        .limit(1)
-        .collect()
-    )
-
-    if previous_txns:
-        prev_pending_balance = float(previous_txns[0]["pending_balance"])
-    else:
-        prev_pending_balance = 0.0
-
-    approved, reason = test_all_checks(transaction_info, cards_updated, customers, stream_transactions)
+    prev_pending_balance = float(transactions_dict.get(txn_id, 0))
+    approved, reason = test_all_checks(transaction_info, cards_dict, customers_dict, transactions_dict)
     status = True
     if approved:
         new_pending_balance = prev_pending_balance + amount
-
         stream_transactions = stream_transactions.withColumn(
             "pending_balance",
             when(col("transaction_id") == txn_id, lit(new_pending_balance)).otherwise(col("pending_balance"))
@@ -214,38 +147,44 @@ def update_txn(transaction_info, cards_updated, customers, stream_transactions):
 
     return stream_transactions, status, reason
 
+def generate_cards_updated(cards_df, stream_transactions):
+    # 1. Aggregate pending balances per card from transactions
+    pending_df = (
+        stream_transactions
+        .groupBy("card_id")
+        .agg(spark_sum("pending_balance").alias("total_pending"))
+    )
 
+    # 2. Join original cards_df with aggregated pending balances
+    updated_cards_df = (
+        cards_df
+        .join(pending_df, on="card_id", how="left")
+        .withColumn("pending_balance", col("current_balance") + col("total_pending"))
+        .drop("total_pending")  # optional
+    )
 
-def process_transactions(tx, stream_transactions, cards_updated, customers):
+    return updated_cards_df
+
+def process_transactions(tx, stream_transactions, cards_dict, customers_dict, transactions_dict):
     txn_id = tx.get("transaction_id")
-    card_id = tx.get("card_id")
-    merchant_name = tx.get("merchant_name")
-    timestamp = tx.get("timestamp")
-    amount = tx.get("amount")
-    location = tx.get("location")
-    transaction_type = tx.get("transaction_type")
-
     transaction_info = {
         "txn_id": txn_id,
-        "card_id": card_id,
-        "merchant_name": merchant_name,
-        "timestamp": timestamp,
-        "amount": amount,
-        "location": location,
-        "transaction_type": transaction_type,
+        "card_id": tx.get("card_id"),
+        "merchant_name": tx.get("merchant_name"),
+        "timestamp": tx.get("timestamp"),
+        "amount": tx.get("amount"),
+        "location": tx.get("location"),
+        "transaction_type": tx.get("transaction_type"),
     }
 
     print(f"Processing transaction: (ID: {txn_id})")
-    # print(f" card_id:{card_id}, merchant name:{merchant_name}, timestamp:{timestamp}, amount:{amount}")
-    # print(f" type: {transaction_type}")
 
-    stream_transactions, status, reason = update_txn(transaction_info, cards_updated, customers, stream_transactions)
+    stream_transactions, status, reason = update_txn(
+        transaction_info, stream_transactions, cards_dict, customers_dict, transactions_dict
+    )
 
     if not status:
         print(f"Transaction Declined. Reason: {reason}")
-
-    # print("")
-    # print("-" * 50)
 
     return stream_transactions
 
@@ -253,24 +192,35 @@ def process_transactions(tx, stream_transactions, cards_updated, customers):
 
 def main():
     """Main function to consume messages from Kafka topic."""
-    config = setup_configuration()
     topic_name = "transactions"
     consumer = create_consumer(topic_name)
 
-    cards_updated, customers, stream_transactions = import_files()
+    cards_df, customers_df, stream_transactions = import_files()
+    cards_dict, customers_dict, transactions_dict = build_lookup_dicts(cards_df, customers_df, stream_transactions)
+    processor = DataProcessor(spark)
 
     print(f"Starting to consume messages from topic '{topic_name}'...")
     print("Waiting for messages... (Press Ctrl+C to stop)")
 
+    MAX_TXNS = 401
+    count = 0
+
     try:
         for txn in consumer:
-            #print(f"\nReceived transaction at offset {txn.offset}:")
             user_data = txn.value
-            stream_transactions = process_transactions(user_data, stream_transactions, cards_updated, customers)
+            stream_transactions = process_transactions(
+                user_data, stream_transactions, cards_dict, customers_dict, transactions_dict
+            )
+            count += 1
+            if count >= MAX_TXNS:
+                print(f"✅ Processed {MAX_TXNS} transactions. Stopping consumer.")
+                break
     except KeyboardInterrupt:
         print("\nConsumer stopped by user")
     finally:
-        DataProcessor.save_to_csv(stream_transactions, config['output_path'])
+        cards_updated_final = generate_cards_updated(cards_df, stream_transactions)
+        processor.save_to_csv(stream_transactions, "data/results/", "stream_transactions.csv")
+        processor.save_to_csv(cards_updated_final, "data/results/","cards_updated.csv")
         consumer.close()
         print("Consumer closed")
     
