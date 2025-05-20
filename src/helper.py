@@ -1,9 +1,9 @@
 """
-Helper functions for processing credit card transactions, location validation, 
+Helper functions for processing credit card transactions, location validation,
 credit score adjustments, and credit limit calculations.
 
-This module contains utility functions that you can modify and extend as needed 
-for your project. Feel free to update these functions or add new ones while 
+This module contains utility functions that you can modify and extend as needed
+for your project. Feel free to update these functions or add new ones while
 maintaining the core functionality.
 """
 
