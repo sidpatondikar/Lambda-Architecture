@@ -14,6 +14,10 @@ The project highlights how to integrate distributed data processing with real-wo
 
 ![alt text](image_banking.png)
 
+- **Airflow** : Implemented process scheduling with the help for Apache Airflow to automate the task
+
+![alt text](image.png)
+
 ---
 
 ## 📁 Project Structure
@@ -28,6 +32,7 @@ The project highlights how to integrate distributed data processing with real-wo
     ├── data_processor.py      # Core data loading, transformation, batch logic
     ├── helper.py              # Contains helper functions for credit logic and location proximity
 ├── data/                  # CSV data files and output results
+├── dags/                  # Contains the airflow dag file
 └── .env                   # Environment variables (MySQL config, table names, etc.)
 ```
 

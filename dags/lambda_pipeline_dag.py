@@ -45,9 +45,8 @@ with DAG(
     task_stream_processing = BashOperator(
         task_id="stream_processing",
         bash_command=(
-            "cd /home/sidx129/project-root/project-4 && "
-            "python3 src/producer.py & "
-            "python3 src/consumer.py; wait"
+            "python3 /home/sidx129/project-root/project-4/src/producer.py & "
+            "python3 /home/sidx129/project-root/project-4/src/consumer.py; wait"
         ),
                 env={
             "MYSQL_URL": "jdbc:mysql://localhost:3306/transactions_cc",
