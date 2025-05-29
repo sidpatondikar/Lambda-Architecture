@@ -18,7 +18,7 @@ def create_consumer(topic_name):
         bootstrap_servers=["localhost:9092"],
         auto_offset_reset="earliest",
         enable_auto_commit=True,
-        group_id="user-data-consumer-group-jkl",
+        group_id="user-data-consumer-group-chels4",
         value_deserializer=lambda x: json.loads(x.decode("utf-8")),
     )
 
@@ -82,7 +82,8 @@ def test_all_checks(
     Applies card validation checks (limit, balance, location) to determine if a transaction is valid.
     Returns (True, None) if valid, else (False, reason).
     """
-    card_id = transaction_info["card_id"]
+    # card_id = transaction_info["card_id"]
+    card_id = str(transaction_info["card_id"])
     txn_id = transaction_info["txn_id"]
     amount = float(transaction_info["amount"])
     location = transaction_info["location"]
@@ -168,7 +169,8 @@ def finalize_output(updates, stream_transactions, spark, processor):
     and writes the result to CSV.
     """
 
-    updates.sort(key=lambda row: int(row["transaction_id"].split(":")[-1]))
+    # updates.sort(key=lambda row: int(row["transaction_id"].split(":")[-1]))
+    updates.sort(key=lambda row: int(row["transaction_id"]))
     updates_df = spark.createDataFrame(updates)
     updates_df = updates_df.withColumnRenamed("status", "new_status").withColumnRenamed(
         "pending_balance", "new_pending_balance"
