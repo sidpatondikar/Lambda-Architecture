@@ -33,6 +33,7 @@ The project highlights how to integrate distributed data processing with real-wo
     ├── helper.py              # Contains helper functions for credit logic and location proximity
 ├── data/                  # CSV data files and output results
 ├── dags/                  # Contains the airflow dag file
+├── mysql_script.sql       # Contains SQL script to create table structure
 └── .env                   # Environment variables (MySQL config, table names, etc.)
 ```
 
